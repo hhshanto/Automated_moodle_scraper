@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Output data (potentially large and sensitive)
+output/
+!output/**/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.egg
+
+# Pytest
+.pytest_cache/
+.coverage
+
+# Ruff
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
