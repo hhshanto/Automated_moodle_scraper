@@ -29,18 +29,20 @@ Before writing any code, confirm you have:
 ## Architecture
 
 ```
-main.py                (entry point -- 3 modes: MCP, --agent, --test-login)
+main.py                   (entry point -- 3 modes: MCP, --agent, --test-login)
     |
-    +-- mcp_server.py  (MCP tool server -- external LLM clients call these)
-    +-- agent.py       (Azure OpenAI agent loop -- standalone mode)
+    +-- mcp_server.py     (MCP tool server -- thin wrappers around tools.py)
+    +-- agent.py          (generic Agent class -- Azure OpenAI tool-calling loop)
     |
-    +-- parser.py      (Azure OpenAI client wrapper -- single entry point for all LLM calls)
+    +-- tools.py          (single source of truth for all tool implementations)
     |
-    +-- auth.py        (browser session, SSO login, navigation, screenshots)
+    +-- browser.py        (Playwright browser lifecycle: launch, navigate, screenshot, close)
+    +-- auth.py           (DFN-AAI SSO login logic only)
+    +-- parser.py         (Azure OpenAI client wrapper -- single entry point for all LLM calls)
     |
-    +-- models.py      (Pydantic data models)
-    +-- exporter.py    (export to XML, HTML, screenshots)
-    +-- utils.py       (logging, timestamps, output directories)
+    +-- models.py         (Pydantic data models)
+    +-- exporter.py       (export to XML, HTML, screenshots)
+    +-- utils.py          (logging, timestamps, output directories)
 ```
 
 Build from the bottom up. Do not start a layer until the layer below it is done.
@@ -66,13 +68,32 @@ Build from the bottom up. Do not start a layer until the layer below it is done.
 
 ---
 
-## Step 2 -- auth.py [DONE]
+## Step 2 -- browser.py + auth.py [DONE]
 
-**Goal:** Launch the browser, handle DFN-AAI SSO login, manage the session.
+**Goal:** Split browser lifecycle and authentication into separate modules.
+
+### browser.py -- Browser lifecycle
+
+**File:** `src/moodle_scraper/browser.py`
+
+Manages the Playwright browser: launching, navigating, screenshots, cookie
+management, and shutdown. Has no knowledge of Moodle or authentication.
+
+| Function | What it does |
+|---|---|
+| `launch_browser()` | Starts Chromium via Playwright, stores on `active_session` |
+| `navigate_to_url(url)` | Navigates to any URL, waits for networkidle, returns page title |
+| `take_screenshot(file_path)` | Saves a full-page PNG to disk |
+| `get_page_text()` | Returns visible text of the current page (truncated to 4000 chars) |
+| `clear_cookies_and_cache()` | Clears cookies, localStorage, sessionStorage |
+| `close_browser()` | Closes browser and resets `active_session` |
+
+### auth.py -- DFN-AAI SSO login
 
 **File:** `src/moodle_scraper/auth.py`
 
-### What was built
+Handles Moodle authentication through the DFN-AAI Shibboleth SSO flow.
+Imports browser primitives from `browser.py`.
 
 Moodle.UP uses DFN-AAI Shibboleth SSO. The login flow is:
 
@@ -82,7 +103,7 @@ Moodle.UP uses DFN-AAI Shibboleth SSO. The login flow is:
 4. Fill username and password on the university IdP login form at `idp.uni-potsdam.de`.
 5. Click "Login" -- Shibboleth redirects back to Moodle with an active session.
 
-### CSS selector constants
+### CSS selector constants (auth.py)
 
 ```
 LOGIN_SUCCESS_SELECTOR         = ".usermenu"
@@ -94,21 +115,11 @@ SSO_PASSWORD_SELECTOR          = "#password"
 SSO_LOGIN_BUTTON_SELECTOR      = "button[type='submit']"
 ```
 
-### Functions implemented
+### Functions implemented (auth.py)
 
 | Function | What it does |
 |---|---|
-| `launch_browser()` | Starts Chromium via Playwright, stores on `active_session` |
-| `navigate_to_url(url)` | Navigates to any URL, returns page title |
-| `take_screenshot(file_path)` | Saves a full-page PNG to disk |
-| `clear_cookies_and_cache()` | Clears cookies, localStorage, sessionStorage |
 | `login_to_moodle(username, password, base_url)` | Full SSO login flow, returns `True`/`False` |
-| `close_browser()` | Closes browser and resets `active_session` |
-
-Private helpers:
-
-| Function | What it does |
-|---|---|
 | `_handle_sso_organisation_picker()` | Sets WAYF select value via JS, clicks Submit |
 | `_fill_sso_login_form(username, password)` | Fills IdP form, clicks Login |
 
@@ -135,36 +146,50 @@ the OpenAI client directly.
 
 ---
 
-## Step 4 -- agent.py [DONE]
+## Step 4 -- tools.py + agent.py [DONE]
 
-**Goal:** A standalone Azure OpenAI agent loop that takes a plain-English goal,
-decides which browser tools to call, executes them, and repeats until done.
+### tools.py -- Shared tool implementations
 
-**File:** `src/moodle_scraper/agent.py`
+**Goal:** Single source of truth for all tool implementations. Both the MCP
+server and the agent loop call these functions, so logic is never duplicated.
 
-### Tools the agent can call
-
-| Tool | Description |
-|---|---|
-| `login` | Launch browser and log into Moodle via SSO |
-| `navigate` | Go to a specific URL |
-| `take_screenshot` | Capture the current page as a PNG |
-| `get_page_content` | Get the visible text of the current page (truncated to 4000 chars) |
-| `get_status` | Check browser and login state |
-| `close_browser` | Shut down the browser |
-| `done` | Signal the goal is accomplished, with a summary |
-
-### Key constants
-
-- `MAX_STEPS = 20` -- the agent stops after 20 tool calls to prevent infinite loops.
-- `SYSTEM_PROMPT` -- instructs the model to act as a browser automation agent.
-
-### Functions implemented
+**File:** `src/moodle_scraper/tools.py`
 
 | Function | What it does |
 |---|---|
-| `execute_tool_call(tool_name, tool_arguments)` | Dispatcher -- calls the right `_execute_*` function |
-| `run_agent(goal)` | Main loop: send messages to Azure OpenAI, execute tool calls, repeat |
+| `login()` | Launch browser, clear cache, log into Moodle via SSO |
+| `navigate(url)` | Navigate the browser to any URL |
+| `take_screenshot(label)` | Capture the current page as a timestamped PNG |
+| `get_page_content()` | Get the visible text of the current page |
+| `get_status()` | Check browser and login state |
+| `close_browser()` | Shut down the browser session |
+| `get_tool_definitions(tool_names)` | Build OpenAI-format tool schemas from the registry |
+| `execute_tool(tool_name, tool_arguments)` | Look up and execute a tool by name |
+
+Every tool function returns a plain `dict` (never raises). The `TOOL_REGISTRY`
+maps tool names to their implementation functions and OpenAI schemas.
+
+### agent.py -- Generic agent loop
+
+**Goal:** A generic `Agent` class that takes a system prompt and a list of tool
+names, then runs the Azure OpenAI tool-calling loop. New agents can be created
+by varying the prompt and tool subset.
+
+**File:** `src/moodle_scraper/agent.py`
+
+| Class/Function | What it does |
+|---|---|
+| `Agent(name, system_prompt, tool_names)` | Creates an agent with a specific prompt and tool set |
+| `Agent.run(goal)` | Runs the agent loop until done or MAX_STEPS reached |
+| `create_moodle_browser_agent()` | Factory for the default Moodle browser agent |
+| `run_agent(goal)` | Convenience function: creates default agent and runs it |
+
+### Key constants
+
+- `MAX_STEPS = 20` -- the agent stops after 20 tool calls.
+- `MOODLE_BROWSER_SYSTEM_PROMPT` -- instructs the model to act as a browser automation agent.
+- `MOODLE_BROWSER_TOOLS` -- the list of tools available to the default agent.
+- `DONE_TOOL_SCHEMA` -- always appended to every agent's tool list.
 
 **Status:** Complete. Run with `python main.py --agent`.
 
@@ -173,7 +198,8 @@ decides which browser tools to call, executes them, and repeats until done.
 ## Step 5 -- mcp_server.py [DONE]
 
 **Goal:** Expose browser capabilities as MCP tools so an external LLM client
-(Claude Desktop, VS Code Copilot) can call them.
+(Claude Desktop, VS Code Copilot) can call them. Each MCP tool is a thin
+wrapper around the shared implementation in `tools.py`.
 
 **File:** `src/moodle_scraper/mcp_server.py`
 
@@ -182,7 +208,9 @@ decides which browser tools to call, executes them, and repeats until done.
 | Tool | Description |
 |---|---|
 | `login` | Launch browser, clear cache, log into Moodle |
+| `navigate` | Navigate the browser to any URL |
 | `take_screenshot` | Capture the current page as a PNG |
+| `get_page_content` | Get the visible text of the current page |
 | `get_status` | Check browser/login state and current URL |
 | `close_browser` | Shut down the browser session |
 
@@ -278,8 +306,8 @@ extract links. The LLM decides which pages to visit and what to do with the data
   live Moodle page.
 - `list_quizzes` navigates to a given course URL and looks for quiz activity links.
   Moodle uses `.activity.quiz` as a class but the exact selectors may vary by theme.
-- Add each tool to both `mcp_server.py` (for MCP clients) and `agent.py`
-  (for the standalone agent).
+- Add each tool to `tools.py` with an entry in `TOOL_REGISTRY`.
+  The MCP server and agent will pick them up automatically.
 - If a tool cannot find expected elements, return an `{"error": "..."}` dict
   instead of raising.
 
@@ -431,9 +459,11 @@ Before marking the project complete, verify every item below.
 | Mistake | Correct approach |
 |---|---|
 | Calling `AzureOpenAI` directly in `agent.py` or `mcp_server.py` | All LLM calls go through `parser.py` only |
+| Duplicating tool logic in `agent.py` and `mcp_server.py` | Define tools once in `tools.py`, use `TOOL_REGISTRY` |
+| Putting browser lifecycle code in `auth.py` | Browser lifecycle lives in `browser.py`, login logic in `auth.py` |
 | Using `"div.que"` as a string inside `page.locator(...)` | Define a constant: `QUESTION_BLOCK_SELECTOR = "div.que"` |
 | Building file paths with `output_dir + "/" + filename` | Use `pathlib`: `output_dir / filename` |
 | Catching all exceptions silently | Log the error with context: `logging.error("...", error)` |
 | Calling `configure_logging()` multiple times | Call it once at startup in `main.py` and `mcp_server.py` |
-| Storing browser state in a local variable | Store it in the module-level `active_session` object |
+| Storing browser state in a local variable | Store it in the module-level `active_session` object in `browser.py` |
 | MCP tools raising exceptions | Always return `{"error": "description"}` instead |

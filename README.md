@@ -20,7 +20,7 @@ The project supports two modes of operation:
 3. [Installation](#3-installation)
 4. [Configuration](#4-configuration)
 5. [Usage](#5-usage)
-6. [Available MCP Tools](#6-available-mcp-tools)
+6. [Available Tools](#6-available-tools)
 7. [Output](#7-output)
 8. [Running Tests](#8-running-tests)
 9. [Troubleshooting](#9-troubleshooting)
@@ -52,12 +52,14 @@ automated_moodle_scraper/
 ├── src/
 │   └── moodle_scraper/
 │       ├── __init__.py
-│       ├── auth.py                # Browser session, DFN-AAI SSO login
-│       ├── agent.py               # Azure OpenAI agent loop (standalone mode)
+│       ├── browser.py             # Playwright browser lifecycle
+│       ├── auth.py                # DFN-AAI SSO login logic
+│       ├── tools.py               # Shared tool implementations (single source of truth)
+│       ├── agent.py               # Generic Agent class (Azure OpenAI loop)
 │       ├── parser.py              # Azure OpenAI client wrapper
 │       ├── models.py              # Pydantic data models (TODO)
 │       ├── exporter.py            # XML, HTML, screenshot export (TODO)
-│       ├── mcp_server.py          # MCP tool server
+│       ├── mcp_server.py          # MCP tool server (thin wrappers around tools.py)
 │       └── utils.py               # Logging, timestamps, output paths
 ├── output/
 │   └── screenshots/               # Captured screenshots
@@ -182,14 +184,19 @@ and waits for you to press Enter before closing.
 
 ---
 
-## 6. Available MCP Tools
+## 6. Available Tools
+
+All tools are defined once in `tools.py` and available in both MCP server and
+agent modes. New tools are added in one place and automatically work everywhere.
 
 ### Currently implemented
 
 | Tool | Description |
 |---|---|
 | `login` | Launch browser, clear cache, log into Moodle via DFN-AAI SSO |
+| `navigate` | Navigate the browser to any URL |
 | `take_screenshot` | Capture the current page as a PNG |
+| `get_page_content` | Return visible text of the current page |
 | `get_status` | Check if browser is open, logged in, and current URL |
 | `close_browser` | Shut down the browser session |
 
@@ -197,8 +204,6 @@ and waits for you to press Enter before closing.
 
 | Tool | Description |
 |---|---|
-| `navigate_to_url` | Navigate the browser to any URL |
-| `get_page_content` | Return visible text of the current page |
 | `list_courses` | Discover all enrolled courses |
 | `list_quizzes` | List quizzes in a given course |
 | `scrape_quiz` | Scrape and parse one quiz |
@@ -207,13 +212,8 @@ and waits for you to press Enter before closing.
 
 ### Agent-only tools
 
-The standalone agent (via `--agent`) has these additional tools built into `agent.py`:
-
-| Tool | Description |
-|---|---|
-| `navigate` | Go to a specific URL |
-| `get_page_content` | Read visible text of the current page |
-| `done` | Signal goal accomplished with a summary |
+The standalone agent (via `--agent`) also has a `done` tool that signals the goal
+is accomplished. This tool is managed by the `Agent` class, not by `tools.py`.
 
 ---
 
