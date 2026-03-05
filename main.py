@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 async def test_login():
     """Log into Moodle manually to verify credentials and browser setup."""
     from moodle_scraper import auth
+    from moodle_scraper.browser import close_browser, launch_browser, clear_cookies_and_cache, take_screenshot
     from moodle_scraper.utils import build_timestamp_string, get_screenshot_directory
 
     moodle_url = os.getenv("MOODLE_BASE_URL", "").strip()
@@ -48,25 +49,25 @@ async def test_login():
         return
 
     print("\nLaunching browser...")
-    await auth.launch_browser()
-    await auth.clear_cookies_and_cache()
+    await launch_browser()
+    await clear_cookies_and_cache()
 
     print(f"Logging into Moodle as '{username}' ...")
     is_login_successful = await auth.login_to_moodle(username, password, moodle_url)
 
     if not is_login_successful:
         print("Login FAILED. Check your credentials in .env.")
-        await auth.close_browser()
+        await close_browser()
         return
 
     print("Login successful.")
 
     screenshot_path = get_screenshot_directory() / f"login_{build_timestamp_string()}.png"
-    await auth.take_screenshot(str(screenshot_path))
+    await take_screenshot(str(screenshot_path))
     print(f"Screenshot saved to: {screenshot_path}")
 
     input("\nPress Enter to close the browser...")
-    await auth.close_browser()
+    await close_browser()
     print("Browser closed.")
 
 

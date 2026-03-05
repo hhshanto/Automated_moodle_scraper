@@ -1,291 +1,89 @@
 """
 agent.py
 
-The Azure OpenAI agent loop. Takes a plain-English goal, sends it to Azure
-OpenAI with tool definitions, executes whichever tool the model picks,
-feeds the result back, and repeats until the model says it is done.
+Generic agent loop powered by Azure OpenAI. An Agent is configured with a
+system prompt and a list of tool names (from tools.py). Different agents
+can be created by varying the prompt and tool subset.
 
-The available tools match what the MCP server exposes, but are called
-directly via auth.py so this agent can run standalone without an MCP client.
+The default Moodle browser agent is created via create_moodle_browser_agent().
 """
 
-import asyncio
 import json
 import logging
-import os
 
-from moodle_scraper import auth, parser
-from moodle_scraper.utils import build_timestamp_string, get_screenshot_directory
+from moodle_scraper import parser
+from moodle_scraper.tools import execute_tool, get_tool_definitions
 
 logger = logging.getLogger(__name__)
 
 MAX_STEPS = 20
 
-# ---------------------------------------------------------------------------
-# Tool definitions sent to Azure OpenAI so the model knows what it can call.
-# ---------------------------------------------------------------------------
-
-TOOL_DEFINITIONS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "login",
-            "description": (
-                "Launch a browser, clear cookies, and log into Moodle. "
-                "Credentials are read from environment variables automatically."
-            ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "navigate",
-            "description": "Navigate the browser to a specific URL.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The full URL to navigate to."},
-                },
-                "required": ["url"],
+# The "done" tool is always added by the Agent -- it is not in tools.py
+# because it has no implementation (it just signals the loop to stop).
+DONE_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "done",
+        "description": "Call this when the goal has been fully accomplished. Include a summary of what was done.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "A summary of what was accomplished."},
             },
+            "required": ["summary"],
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "take_screenshot",
-            "description": "Take a screenshot of the current browser page.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "description": "A short label for the screenshot filename.",
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_page_content",
-            "description": (
-                "Return the text content of the current browser page. "
-                "Use this to read what is on screen."
-            ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_status",
-            "description": "Check if the browser is open, if logged in, and what URL is loaded.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "close_browser",
-            "description": "Close the browser and end the session.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "done",
-            "description": "Call this when the goal has been fully accomplished. Include a summary of what was done.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {"type": "string", "description": "A summary of what was accomplished."},
-                },
-                "required": ["summary"],
-            },
-        },
-    },
-]
-
-# ---------------------------------------------------------------------------
-# Tool execution -- each function matches a name in TOOL_DEFINITIONS.
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT = (
-    "You are a browser automation agent for Moodle. "
-    "You have tools to control a browser. Use them step by step to accomplish the user's goal. "
-    "After each tool call you will see its result. Decide the next tool to call based on that result. "
-    "When the goal is fully accomplished, call the 'done' tool with a summary. "
-    "If you get stuck, call 'done' and explain what went wrong in the summary."
-)
+}
 
 
-async def execute_tool_call(tool_name: str, tool_arguments: dict) -> str:
+class Agent:
     """
-    Execute a single tool call and return the result as a JSON string.
+    A generic agent that uses Azure OpenAI to decide which tools to call.
 
-    Args:
-        tool_name:      The name of the tool to execute.
-        tool_arguments: The arguments dict parsed from the model's response.
-
-    Returns:
-        A JSON string containing the tool result.
+    Each agent is configured with a name, a system prompt, and a list of tool
+    names from the shared TOOL_REGISTRY in tools.py.
     """
-    logger.info("Executing tool: %s with args: %s", tool_name, tool_arguments)
 
-    if tool_name == "login":
-        return await _execute_login()
+    def __init__(self, name: str, system_prompt: str, tool_names: list[str]) -> None:
+        """
+        Create a new agent.
 
-    if tool_name == "navigate":
-        return await _execute_navigate(tool_arguments.get("url", ""))
+        Args:
+            name:          A human-readable name for this agent (used in logs).
+            system_prompt: The system message that tells the model how to behave.
+            tool_names:    List of tool names from tools.py to make available.
+        """
+        self.name = name
+        self.system_prompt = system_prompt
+        self.tool_definitions = get_tool_definitions(tool_names) + [DONE_TOOL_SCHEMA]
 
-    if tool_name == "take_screenshot":
-        return await _execute_take_screenshot(tool_arguments.get("label", "agent"))
+    async def run(self, goal: str) -> str:
+        """
+        Run the agent loop: send the goal to Azure OpenAI, execute tool calls,
+        feed results back, repeat until the model calls 'done' or MAX_STEPS.
 
-    if tool_name == "get_page_content":
-        return await _execute_get_page_content()
+        Args:
+            goal: Plain-English description of what to accomplish.
 
-    if tool_name == "get_status":
-        return await _execute_get_status()
+        Returns:
+            A summary string of what the agent accomplished.
+        """
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": goal},
+        ]
 
-    if tool_name == "close_browser":
-        return await _execute_close_browser()
+        for step_number in range(1, MAX_STEPS + 1):
+            logger.info("[%s] Step %d", self.name, step_number)
 
-    if tool_name == "done":
-        return json.dumps({"status": "done", "summary": tool_arguments.get("summary", "")})
+            response = parser.call_azure_openai(messages, tools=self.tool_definitions)
+            response_message = response.choices[0].message
 
-    return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            if not response_message.tool_calls:
+                final_text = response_message.content or "Agent finished without a summary."
+                logger.info("[%s] Responded with text: %s", self.name, final_text)
+                return final_text
 
-
-async def _execute_login() -> str:
-    """Launch browser and log into Moodle using .env credentials."""
-    moodle_url = os.getenv("MOODLE_BASE_URL", "").strip()
-    username = os.getenv("MOODLE_USERNAME", "").strip()
-    password = os.getenv("MOODLE_PASSWORD", "").strip()
-
-    if not moodle_url or not username or not password:
-        return json.dumps({"error": "Missing MOODLE_BASE_URL, MOODLE_USERNAME, or MOODLE_PASSWORD in .env"})
-
-    try:
-        await auth.launch_browser()
-        await auth.clear_cookies_and_cache()
-        is_login_successful = await auth.login_to_moodle(username, password, moodle_url)
-
-        if not is_login_successful:
-            return json.dumps({"error": "Login failed. Moodle rejected the credentials."})
-
-        page_title = await auth.active_session.page.title()
-        return json.dumps({"status": "logged_in", "page_title": page_title})
-
-    except Exception as error:
-        logger.error("login tool failed: %s", error)
-        return json.dumps({"error": str(error)})
-
-
-async def _execute_navigate(url: str) -> str:
-    """Navigate the browser to a URL."""
-    try:
-        page_title = await auth.navigate_to_url(url)
-        return json.dumps({"status": "navigated", "url": url, "page_title": page_title})
-    except Exception as error:
-        logger.error("navigate tool failed: %s", error)
-        return json.dumps({"error": str(error)})
-
-
-async def _execute_take_screenshot(label: str) -> str:
-    """Take a screenshot and return the file path."""
-    try:
-        timestamp = build_timestamp_string()
-        screenshot_dir = get_screenshot_directory()
-        file_path = screenshot_dir / f"{label}_{timestamp}.png"
-        await auth.take_screenshot(str(file_path))
-        return json.dumps({"file_path": str(file_path)})
-    except Exception as error:
-        logger.error("take_screenshot tool failed: %s", error)
-        return json.dumps({"error": str(error)})
-
-
-async def _execute_get_page_content() -> str:
-    """Return the visible text content of the current page."""
-    try:
-        if auth.active_session.page is None:
-            return json.dumps({"error": "Browser is not running."})
-
-        # Get visible text only, not full HTML, to keep token usage reasonable.
-        text_content = await auth.active_session.page.inner_text("body")
-
-        # Truncate to avoid blowing up the context window.
-        max_characters = 4000
-        if len(text_content) > max_characters:
-            text_content = text_content[:max_characters] + "\n... (truncated)"
-
-        return json.dumps({"page_text": text_content})
-    except Exception as error:
-        logger.error("get_page_content tool failed: %s", error)
-        return json.dumps({"error": str(error)})
-
-
-async def _execute_get_status() -> str:
-    """Return browser and login status."""
-    is_browser_open = auth.active_session.page is not None
-    current_url = ""
-
-    if is_browser_open:
-        try:
-            current_url = auth.active_session.page.url
-        except Exception:
-            current_url = "unknown"
-
-    return json.dumps({
-        "is_browser_open": is_browser_open,
-        "is_logged_in": auth.active_session.is_logged_in,
-        "current_url": current_url,
-    })
-
-
-async def _execute_close_browser() -> str:
-    """Close the browser session."""
-    try:
-        await auth.close_browser()
-        return json.dumps({"status": "browser_closed"})
-    except Exception as error:
-        logger.error("close_browser tool failed: %s", error)
-        return json.dumps({"error": str(error)})
-
-
-# ---------------------------------------------------------------------------
-# The main agent loop.
-# ---------------------------------------------------------------------------
-
-async def run_agent(goal: str) -> str:
-    """
-    Run the agent loop: send the goal to Azure OpenAI, execute tool calls,
-    feed results back, repeat until the model calls 'done' or MAX_STEPS.
-
-    Args:
-        goal: Plain-English description of what to accomplish.
-
-    Returns:
-        A summary string of what the agent accomplished.
-    """
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": goal},
-    ]
-
-    for step_number in range(1, MAX_STEPS + 1):
-        logger.info("Agent step %d", step_number)
-
-        response = parser.call_azure_openai(messages, tools=TOOL_DEFINITIONS)
-        response_message = response.choices[0].message
-
-        # If the model wants to call tools, execute them.
-        if response_message.tool_calls:
-            # Add the assistant message with tool_calls to the conversation.
             messages.append(response_message)
 
             for tool_call in response_message.tool_calls:
@@ -294,28 +92,70 @@ async def run_agent(goal: str) -> str:
 
                 print(f"  Step {step_number}: calling {tool_name}({tool_arguments})")
 
-                # Check for "done" before executing.
                 if tool_name == "done":
                     summary = tool_arguments.get("summary", "No summary provided.")
-                    logger.info("Agent finished: %s", summary)
+                    logger.info("[%s] Finished: %s", self.name, summary)
                     return summary
 
-                tool_result = await execute_tool_call(tool_name, tool_arguments)
-                logger.info("Tool result: %s", tool_result)
+                tool_result = await execute_tool(tool_name, tool_arguments)
+                logger.info("[%s] Tool result: %s", self.name, tool_result)
 
-                # Feed the tool result back to the model.
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": tool_result,
                 })
 
-            continue
+        return "Agent reached the maximum number of steps without completing the goal."
 
-        # If the model responds with plain text (no tool call), we are done.
-        final_text = response_message.content or "Agent finished without a summary."
-        logger.info("Agent responded with text: %s", final_text)
-        return final_text
 
-    return "Agent reached the maximum number of steps without completing the goal."
+# ---------------------------------------------------------------------------
+# Pre-built agents
+# ---------------------------------------------------------------------------
+
+MOODLE_BROWSER_SYSTEM_PROMPT = (
+    "You are a browser automation agent for Moodle. "
+    "You have tools to control a browser. Use them step by step to accomplish the user's goal. "
+    "After each tool call you will see its result. Decide the next tool to call based on that result. "
+    "When the goal is fully accomplished, call the 'done' tool with a summary. "
+    "If you get stuck, call 'done' and explain what went wrong in the summary."
+)
+
+MOODLE_BROWSER_TOOLS = [
+    "login",
+    "navigate",
+    "take_screenshot",
+    "get_page_content",
+    "get_status",
+    "wait_on_page",
+    "close_browser",
+]
+
+
+def create_moodle_browser_agent() -> Agent:
+    """
+    Create the default Moodle browser agent with all browser tools.
+
+    Returns:
+        An Agent instance configured for Moodle browser automation.
+    """
+    return Agent(
+        name="moodle-browser",
+        system_prompt=MOODLE_BROWSER_SYSTEM_PROMPT,
+        tool_names=MOODLE_BROWSER_TOOLS,
+    )
+
+
+async def run_agent(goal: str) -> str:
+    """
+    Convenience function: create the default Moodle browser agent and run it.
+
+    Args:
+        goal: Plain-English description of what to accomplish.
+
+    Returns:
+        A summary string of what the agent accomplished.
+    """
+    agent = create_moodle_browser_agent()
+    return await agent.run(goal)
 
