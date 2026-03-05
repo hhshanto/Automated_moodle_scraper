@@ -127,6 +127,7 @@ MOODLE_BROWSER_TOOLS = [
     "take_screenshot",
     "get_page_content",
     "get_status",
+    "extract_links",
     "wait_on_page",
     "close_browser",
 ]
@@ -146,6 +147,45 @@ def create_moodle_browser_agent() -> Agent:
     )
 
 
+COURSE_NAVIGATOR_SYSTEM_PROMPT = (
+    "You are a Moodle course navigation agent. Your job is to log into Moodle, "
+    "find a specific course on the dashboard, navigate to it, and report what you see. "
+    "Steps: 1) Call login to open the browser and log in. "
+    "2) Call extract_links to find all links on the dashboard. "
+    "3) Find the course link that matches the target course name. "
+    "4) Call navigate with that URL to go to the course page. "
+    "5) Call get_page_content to read the course page. "
+    "6) Call take_screenshot to capture the course page. "
+    "7) Call done with a summary of the course page contents. "
+    "If the course is not found in the links, call done and explain that."
+)
+
+COURSE_NAVIGATOR_TOOLS = [
+    "login",
+    "navigate",
+    "take_screenshot",
+    "get_page_content",
+    "get_status",
+    "extract_links",
+    "wait_on_page",
+    "close_browser",
+]
+
+
+def create_course_navigator_agent() -> Agent:
+    """
+    Create a course navigator agent that logs in and navigates to a specific course.
+
+    Returns:
+        An Agent instance configured for course navigation.
+    """
+    return Agent(
+        name="course-navigator",
+        system_prompt=COURSE_NAVIGATOR_SYSTEM_PROMPT,
+        tool_names=COURSE_NAVIGATOR_TOOLS,
+    )
+
+
 async def run_agent(goal: str) -> str:
     """
     Convenience function: create the default Moodle browser agent and run it.
@@ -157,5 +197,20 @@ async def run_agent(goal: str) -> str:
         A summary string of what the agent accomplished.
     """
     agent = create_moodle_browser_agent()
+    return await agent.run(goal)
+
+
+async def run_course_agent(course_name: str) -> str:
+    """
+    Create the course navigator agent and navigate to the given course.
+
+    Args:
+        course_name: The name of the course to find and navigate to.
+
+    Returns:
+        A summary string of what the agent found on the course page.
+    """
+    agent = create_course_navigator_agent()
+    goal = f"Log into Moodle and navigate to the course called '{course_name}'. Read the course page and take a screenshot."
     return await agent.run(goal)
 

@@ -143,6 +143,34 @@ async def get_status() -> dict:
     }
 
 
+async def extract_links() -> dict:
+    """
+    Extract all links from the current browser page.
+
+    Returns a list of dicts, each with "text" (the visible link text) and
+    "url" (the href). Useful for discovering course links, quiz links, etc.
+
+    Returns:
+        A dict with "links": [{"text": ..., "url": ...}, ...] on success,
+        or "error" on failure.
+    """
+    if active_session.page is None:
+        return {"error": "Browser is not running."}
+
+    try:
+        links = await active_session.page.evaluate(
+            """() => {
+                return Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => ({ text: a.innerText.trim(), url: a.href }))
+                    .filter(link => link.text.length > 0 && link.url.startsWith('http'));
+            }"""
+        )
+        return {"links": links, "count": len(links)}
+    except Exception as error:
+        logger.error("extract_links tool failed: %s", error)
+        return {"error": str(error)}
+
+
 async def wait_on_page(seconds: int = 5) -> dict:
     """
     Wait on the current browser page for a given number of seconds without navigating away.
@@ -262,6 +290,21 @@ TOOL_REGISTRY = {
             "function": {
                 "name": "get_status",
                 "description": "Check if the browser is open, if logged in, and what URL is loaded.",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+    },
+    "extract_links": {
+        "function": extract_links,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "extract_links",
+                "description": (
+                    "Extract all links from the current browser page. "
+                    "Returns a list of link text and URLs. Use this to find "
+                    "course links, quiz links, or any other clickable links."
+                ),
                 "parameters": {"type": "object", "properties": {}, "required": []},
             },
         },

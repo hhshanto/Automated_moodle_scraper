@@ -90,6 +90,17 @@ async def get_status() -> dict:
 
 
 @mcp.tool()
+async def extract_links() -> dict:
+    """
+    Extract all links from the current browser page.
+
+    Returns:
+        A dict with "links" (list of text/url pairs) and "count", or "error" on failure.
+    """
+    return await tools.extract_links()
+
+
+@mcp.tool()
 async def wait_on_page(seconds: int = 5) -> dict:
     """
     Wait on the current browser page for a given number of seconds without navigating away.

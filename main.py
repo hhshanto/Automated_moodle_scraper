@@ -1,7 +1,7 @@
 """
 main.py
 
-Entry point for the Moodle Scraper. Supports three modes:
+Entry point for the Moodle Scraper. Supports four modes:
 
 Usage:
     MCP server (for Claude Desktop / VS Code Copilot):
@@ -12,6 +12,9 @@ Usage:
 
     Azure OpenAI agent (standalone, give it a goal):
         python main.py --agent
+
+    Course navigator (log in and go to a specific course):
+        python main.py --course
 
     Manual login test (no LLM, just browser):
         python main.py --test-login
@@ -96,10 +99,35 @@ async def run_agent_mode():
     print(f"========================================")
 
 
+async def run_course_mode():
+    """Run the course navigator agent to find and open a specific course."""
+    from moodle_scraper.agent import run_course_agent
+
+    print("\n========================================")
+    print("  Moodle Scraper -- Course Navigator")
+    print("========================================\n")
+
+    course_name = input("Enter the course name to navigate to:\nCourse: ").strip()
+    if not course_name:
+        print("No course name entered.")
+        return
+
+    print(f"\nNavigating to course: {course_name}\n")
+
+    summary = await run_course_agent(course_name)
+
+    print(f"\n========================================")
+    print(f"Course navigator finished.")
+    print(f"Summary: {summary}")
+    print(f"========================================")
+
+
 def main():
     """Parse arguments and run the appropriate mode."""
     if "--test-login" in sys.argv:
         asyncio.run(test_login())
+    elif "--course" in sys.argv:
+        asyncio.run(run_course_mode())
     elif "--agent" in sys.argv:
         asyncio.run(run_agent_mode())
     else:
