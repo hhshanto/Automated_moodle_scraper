@@ -11,10 +11,17 @@ The default Moodle browser agent is created via create_moodle_browser_agent().
 import json
 import logging
 
+from rich.console import Console
+from rich.markup import escape
+from rich.spinner import Spinner
+from rich.live import Live
+from rich.text import Text
+
 from moodle_scraper import parser
 from moodle_scraper.tools import execute_tool, get_tool_definitions
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 MAX_STEPS = 20
 
@@ -56,6 +63,11 @@ class Agent:
         self.name = name
         self.system_prompt = system_prompt
         self.tool_definitions = get_tool_definitions(tool_names) + [DONE_TOOL_SCHEMA]
+        # Conversation history persists across multiple run() calls so the LLM
+        # remembers what it did in previous turns within the same chat session.
+        self.messages: list[dict] = [
+            {"role": "system", "content": self.system_prompt},
+        ]
 
     async def run(self, goal: str) -> str:
         """
@@ -68,39 +80,56 @@ class Agent:
         Returns:
             A summary string of what the agent accomplished.
         """
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": goal},
-        ]
+        self.messages.append({"role": "user", "content": goal})
 
         for step_number in range(1, MAX_STEPS + 1):
             logger.info("[%s] Step %d", self.name, step_number)
 
-            response = parser.call_azure_openai(messages, tools=self.tool_definitions)
+            response = parser.call_azure_openai(self.messages, tools=self.tool_definitions)
             response_message = response.choices[0].message
 
             if not response_message.tool_calls:
                 final_text = response_message.content or "Agent finished without a summary."
                 logger.info("[%s] Responded with text: %s", self.name, final_text)
+                self.messages.append({"role": "assistant", "content": final_text})
                 return final_text
 
-            messages.append(response_message)
+            self.messages.append(response_message)
 
             for tool_call in response_message.tool_calls:
                 tool_name = tool_call.function.name
                 tool_arguments = json.loads(tool_call.function.arguments)
 
-                print(f"  Step {step_number}: calling {tool_name}({tool_arguments})")
+                console.print(
+                    f"  [bold cyan]Step {step_number}:[/] [yellow]{tool_name}[/]"
+                    f"([dim]{escape(json.dumps(tool_arguments))}[/])"
+                )
 
                 if tool_name == "done":
                     summary = tool_arguments.get("summary", "No summary provided.")
                     logger.info("[%s] Finished: %s", self.name, summary)
+                    console.print(f"  [bold green]Done:[/] {escape(summary)}")
+                    # Add a tool response for "done" so the history stays valid
+                    # for future turns in the same chat session.
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": summary,
+                    })
                     return summary
 
-                tool_result = await execute_tool(tool_name, tool_arguments)
+                spinner_text = Text.assemble(
+                    ("Running ", "dim"),
+                    (tool_name, "bold yellow"),
+                    ("...", "dim"),
+                )
+                with Live(Spinner("dots", text=spinner_text), console=console, transient=True):
+                    tool_result = await execute_tool(tool_name, tool_arguments)
+
+                console.print(f"  [green]✓[/] [yellow]{tool_name}[/] complete")
                 logger.info("[%s] Tool result: %s", self.name, tool_result)
 
-                messages.append({
+                self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": tool_result,
@@ -118,7 +147,8 @@ MOODLE_BROWSER_SYSTEM_PROMPT = (
     "You have tools to control a browser. Use them step by step to accomplish the user's goal. "
     "After each tool call you will see its result. Decide the next tool to call based on that result. "
     "When the goal is fully accomplished, call the 'done' tool with a summary. "
-    "If you get stuck, call 'done' and explain what went wrong in the summary."
+    "If you get stuck, call 'done' and explain what went wrong in the summary. "
+    "IMPORTANT: Do NOT call close_browser unless the user explicitly asks you to close the browser."
 )
 
 MOODLE_BROWSER_TOOLS = [
@@ -128,6 +158,10 @@ MOODLE_BROWSER_TOOLS = [
     "get_page_content",
     "get_status",
     "extract_links",
+    "get_select_options",
+    "click_element",
+    "click_and_download",
+    "fill_form_field",
     "wait_on_page",
     "close_browser",
 ]
@@ -157,7 +191,8 @@ COURSE_NAVIGATOR_SYSTEM_PROMPT = (
     "5) Call get_page_content to read the course page. "
     "6) Call take_screenshot to capture the course page. "
     "7) Call done with a summary of the course page contents. "
-    "If the course is not found in the links, call done and explain that."
+    "If the course is not found in the links, call done and explain that. "
+    "IMPORTANT: Do NOT call close_browser unless the user explicitly asks you to close the browser."
 )
 
 COURSE_NAVIGATOR_TOOLS = [
@@ -167,6 +202,10 @@ COURSE_NAVIGATOR_TOOLS = [
     "get_page_content",
     "get_status",
     "extract_links",
+    "get_select_options",
+    "click_element",
+    "click_and_download",
+    "fill_form_field",
     "wait_on_page",
     "close_browser",
 ]
