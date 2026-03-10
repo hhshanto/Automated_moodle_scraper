@@ -43,12 +43,19 @@ async def launch_browser() -> None:
     """
     Start a Chromium browser and open a blank page.
 
+    If a browser is already running, this function does nothing, so it is safe
+    to call multiple times across separate agent runs without opening new windows.
+
     Reads HEADLESS from the environment. Set HEADLESS=false in .env to watch
     the browser window on screen.
 
     Returns:
         None. Stores the browser, context, and page on active_session.
     """
+    if active_session.page is not None:
+        logger.info("Browser already running -- reusing existing session.")
+        return
+
     active_session._playwright = await async_playwright().start()
     active_session.browser = await active_session._playwright.chromium.launch(headless=IS_HEADLESS)
     active_session.context = await active_session.browser.new_context()

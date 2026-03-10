@@ -7,6 +7,9 @@ client directly -- everything goes through this single wrapper.
 Provides one function: call_azure_openai, which sends messages (with optional
 tool definitions) and returns the model response. The agent loop in agent.py
 uses this to decide which tool to call next.
+
+Token usage is logged at INFO level after every call and accumulated in the
+module-level TOKEN_USAGE counter so callers can inspect the running total.
 """
 
 import logging
@@ -20,6 +23,13 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 _azure_client: AzureOpenAI | None = None
+
+# Running totals across all calls in the current session.
+TOKEN_USAGE = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+}
 
 
 def _get_client() -> AzureOpenAI:
@@ -76,6 +86,22 @@ def call_azure_openai(messages: list, tools: list | None = None) -> object:
 
     try:
         response = client.chat.completions.create(**request_kwargs)
+
+        if response.usage:
+            TOKEN_USAGE["prompt_tokens"] += response.usage.prompt_tokens
+            TOKEN_USAGE["completion_tokens"] += response.usage.completion_tokens
+            TOKEN_USAGE["total_tokens"] += response.usage.total_tokens
+            logger.info(
+                "Token usage -- this call: prompt=%d completion=%d total=%d | "
+                "session totals: prompt=%d completion=%d total=%d",
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                response.usage.total_tokens,
+                TOKEN_USAGE["prompt_tokens"],
+                TOKEN_USAGE["completion_tokens"],
+                TOKEN_USAGE["total_tokens"],
+            )
+
         return response
     except Exception as error:
         logger.error("Azure OpenAI request failed: %s", error)

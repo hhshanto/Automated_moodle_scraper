@@ -5,6 +5,7 @@ mcp[cli]>=1.0
 pydantic>=2.7
 python-dotenv>=1.0
 pandas>=2.2
+rich>=13.0
 
 # Dev / test dependencies
 pytest>=8.0

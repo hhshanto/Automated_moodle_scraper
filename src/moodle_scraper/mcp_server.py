@@ -90,6 +90,17 @@ async def get_status() -> dict:
 
 
 @mcp.tool()
+async def extract_links() -> dict:
+    """
+    Extract all links from the current browser page.
+
+    Returns:
+        A dict with "links" (list of text/url pairs) and "count", or "error" on failure.
+    """
+    return await tools.extract_links()
+
+
+@mcp.tool()
 async def wait_on_page(seconds: int = 5) -> dict:
     """
     Wait on the current browser page for a given number of seconds without navigating away.
@@ -102,6 +113,67 @@ async def wait_on_page(seconds: int = 5) -> dict:
         or "error" if the browser is not running.
     """
     return await tools.wait_on_page(seconds)
+
+
+@mcp.tool()
+async def click_and_download(selector: str, label: str = "download") -> dict:
+    """
+    Click a button or link that triggers a file download and save it to output/downloads/.
+
+    Args:
+        selector: A CSS selector identifying the button or link to click.
+        label:    A short label included in the saved filename.
+
+    Returns:
+        A dict with "file_path" and "original_filename", or "error" on failure.
+    """
+    return await tools.click_and_download(selector, label)
+
+
+@mcp.tool()
+async def get_select_options(selector: str) -> dict:
+    """
+    Return all options from a <select> dropdown on the current page.
+
+    Args:
+        selector: A CSS selector identifying the <select> element.
+
+    Returns:
+        A dict with "options": [{"value": ..., "label": ..., "is_selected": ...}]
+        or "error" on failure.
+    """
+    return await tools.get_select_options(selector)
+
+
+@mcp.tool()
+async def click_element(selector: str) -> dict:
+    """
+    Click an element on the current page using a CSS selector.
+
+    Use this to click buttons, radio buttons, checkboxes, and submit forms.
+
+    Args:
+        selector: A CSS selector identifying the element to click.
+
+    Returns:
+        A dict with "status": "clicked" and the selector, or "error" on failure.
+    """
+    return await tools.click_element(selector)
+
+
+@mcp.tool()
+async def fill_form_field(selector: str, value: str) -> dict:
+    """
+    Fill a form field with a value. Works for text inputs and <select> dropdowns.
+
+    Args:
+        selector: A CSS selector identifying the form field.
+        value:    The value to fill in, or visible option text for <select> elements.
+
+    Returns:
+        A dict with "status": "filled", selector, and value, or "error" on failure.
+    """
+    return await tools.fill_form_field(selector, value)
 
 
 @mcp.tool()

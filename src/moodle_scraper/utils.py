@@ -38,6 +38,18 @@ def get_screenshot_directory() -> Path:
     return screenshot_dir
 
 
+def get_downloads_directory() -> Path:
+    """
+    Return the xml subdirectory inside the output directory for downloaded files.
+
+    Returns:
+        A Path object pointing to output/xml/.
+    """
+    downloads_dir = get_output_directory() / "xml"
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    return downloads_dir
+
+
 def build_timestamp_string() -> str:
     """
     Return the current UTC datetime as a compact string safe for use in file names.

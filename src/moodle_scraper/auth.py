@@ -1,12 +1,17 @@
 """
 auth.py
 
-Handles Moodle authentication through the DFN-AAI Shibboleth SSO flow.
+Handles Moodle authentication for two login flows:
+  - "sso": DFN-AAI Shibboleth SSO (default, for the University of Potsdam Moodle).
+  - "standard": Direct Moodle username/password form (for open/test Moodle instances).
+
+Set MOODLE_AUTH_TYPE=standard in .env to use the direct login flow.
 All browser primitives (launch, navigate, screenshot, close) live in browser.py.
 This module only knows about authentication logic.
 """
 
 import logging
+import os
 
 from moodle_scraper.browser import active_session
 
@@ -25,20 +30,23 @@ SSO_USERNAME_SELECTOR = "#username"
 SSO_PASSWORD_SELECTOR = "#password"
 SSO_LOGIN_BUTTON_SELECTOR = "button[type='submit']"
 
+# CSS selectors for the standard Moodle login form (no SSO).
+STANDARD_USERNAME_SELECTOR = "#username"
+STANDARD_PASSWORD_SELECTOR = "#password"
+STANDARD_LOGIN_BUTTON_SELECTOR = "#loginbtn"
+
 
 async def login_to_moodle(username: str, password: str, base_url: str) -> bool:
     """
-    Log into Moodle through the DFN-AAI SSO flow.
+    Log into Moodle using the appropriate login flow.
 
-    Steps:
-      1. Navigate to the Moodle login page (redirects to DFN-AAI WAYF).
-      2. Select University of Potsdam from the organization dropdown.
-      3. Fill in the university SSO credentials and submit.
-      4. Wait for redirect back to Moodle with an active session.
+    The login flow is controlled by the MOODLE_AUTH_TYPE environment variable:
+      - "sso" (default): DFN-AAI Shibboleth SSO for the University of Potsdam.
+      - "standard": Direct Moodle username/password form (for open/test instances).
 
     Args:
-        username: The university SSO username.
-        password: The university SSO password.
+        username: The Moodle or SSO username.
+        password: The Moodle or SSO password.
         base_url: The base URL of the Moodle instance.
 
     Returns:
@@ -47,39 +55,31 @@ async def login_to_moodle(username: str, password: str, base_url: str) -> bool:
     if active_session.page is None:
         raise RuntimeError("Browser is not running. Call launch_browser() first.")
 
+    auth_type = os.getenv("MOODLE_AUTH_TYPE", "sso").strip().lower()
     login_url = base_url.rstrip("/") + "/login/index.php"
 
     try:
         await active_session.page.goto(login_url, wait_until="domcontentloaded")
-        logger.info("Navigated to login page: %s", login_url)
+        logger.info("Navigated to login page: %s (auth_type=%s)", login_url, auth_type)
 
-        # Step 1: The login URL redirects straight to the DFN-AAI WAYF page.
-        await _handle_sso_organisation_picker()
+        if auth_type == "standard":
+            await _fill_standard_moodle_login_form(username, password)
+        else:
+            # Default: DFN-AAI SSO flow.
+            await _handle_sso_organisation_picker()
+            await _fill_sso_login_form(username, password)
+            await active_session.page.wait_for_url(f"{base_url}/**", timeout=30000)
+            logger.info("Redirected back to Moodle after SSO login.")
 
-        # Step 2: Fill and submit the university SSO login form.
-        await _fill_sso_login_form(username, password)
-
-        # Step 3: Wait for redirect back to Moodle.
-        await active_session.page.wait_for_url(
-            f"{base_url}/**",
-            timeout=30000,
-        )
-        logger.info("Redirected back to Moodle after SSO login.")
-
-        # Step 4: Verify login was successful.
+        # Verify login was successful by checking for the user menu.
         try:
-            await active_session.page.wait_for_selector(
-                LOGIN_SUCCESS_SELECTOR,
-                timeout=10000,
-            )
+            await active_session.page.wait_for_selector(LOGIN_SUCCESS_SELECTOR, timeout=10000)
         except Exception:
-            logger.error("Login failed -- did not find user menu after SSO redirect.")
+            logger.error("Login failed -- did not find user menu after login.")
             active_session.is_logged_in = False
             return False
 
-        # Step 5: Wait for the Moodle dashboard to fully load.
         await active_session.page.wait_for_load_state("networkidle")
-
         active_session.is_logged_in = True
         logger.info("Login succeeded for user: %s", username)
         return True
@@ -88,6 +88,31 @@ async def login_to_moodle(username: str, password: str, base_url: str) -> bool:
         logger.error("Login attempt failed with an exception: %s", error)
         active_session.is_logged_in = False
         return False
+
+
+async def _fill_standard_moodle_login_form(username: str, password: str) -> None:
+    """
+    Fill in the standard Moodle login form (no SSO) and submit.
+
+    Used for open or test Moodle instances that have a native username/password
+    form at /login/index.php instead of redirecting to an SSO provider.
+
+    Args:
+        username: The Moodle username.
+        password: The Moodle password.
+    """
+    page = active_session.page
+
+    await page.wait_for_selector(STANDARD_USERNAME_SELECTOR, timeout=10000)
+    logger.info("Standard Moodle login form loaded.")
+
+    await page.fill(STANDARD_USERNAME_SELECTOR, username)
+    await page.fill(STANDARD_PASSWORD_SELECTOR, password)
+    logger.info("Filled standard login credentials for user: %s", username)
+
+    await page.click(STANDARD_LOGIN_BUTTON_SELECTOR)
+    await page.wait_for_load_state("networkidle")
+    logger.info("Submitted standard Moodle login form.")
 
 
 async def _handle_sso_organisation_picker() -> None:

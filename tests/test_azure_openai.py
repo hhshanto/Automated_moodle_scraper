@@ -102,7 +102,7 @@ def send_test_message(client: AzureOpenAI, deployment_name: str) -> str:
                 ),
             },
         ],
-        max_tokens=30,
+        max_tokens=3000,
         temperature=0,
     )
     return response.choices[0].message.content.strip()

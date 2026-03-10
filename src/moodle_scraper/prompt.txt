@@ -1,0 +1,11 @@
+Login to Moodle
+Navigate to the Question Bank Export page for course MCP_AI: https://openup.uni-potsdam.de/question/bank/exportquestions/export.php?courseid=691
+Call get_select_options on select[name="category"] to get the full list of all dropdown options with their value IDs
+From that list, extract every option whose label is exactly "Quizz" and note their value attributes
+For each Quizz value, repeat these steps:
+
+Navigate back to https://openup.uni-potsdam.de/question/bank/exportquestions/export.php?courseid=691
+Click input[name="format"][value="xml"] to select Moodle XML format
+Call fill_form_field on select[name="category"] using the value attribute (NOT the label text)
+Click input[value="Export questions to file"]
+Wait 2 seconds before proceeding to the next one

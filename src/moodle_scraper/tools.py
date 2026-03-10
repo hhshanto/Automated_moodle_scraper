@@ -23,7 +23,7 @@ from moodle_scraper.browser import (
     navigate_to_url,
     take_screenshot as _take_screenshot,
 )
-from moodle_scraper.utils import build_timestamp_string, get_screenshot_directory
+from moodle_scraper.utils import build_timestamp_string, get_screenshot_directory, get_downloads_directory
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,34 @@ async def get_status() -> dict:
     }
 
 
+async def extract_links() -> dict:
+    """
+    Extract all links from the current browser page.
+
+    Returns a list of dicts, each with "text" (the visible link text) and
+    "url" (the href). Useful for discovering course links, quiz links, etc.
+
+    Returns:
+        A dict with "links": [{"text": ..., "url": ...}, ...] on success,
+        or "error" on failure.
+    """
+    if active_session.page is None:
+        return {"error": "Browser is not running."}
+
+    try:
+        links = await active_session.page.evaluate(
+            """() => {
+                return Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => ({ text: a.innerText.trim(), url: a.href }))
+                    .filter(link => link.text.length > 0 && link.url.startsWith('http'));
+            }"""
+        )
+        return {"links": links, "count": len(links)}
+    except Exception as error:
+        logger.error("extract_links tool failed: %s", error)
+        return {"error": str(error)}
+
+
 async def wait_on_page(seconds: int = 5) -> dict:
     """
     Wait on the current browser page for a given number of seconds without navigating away.
@@ -166,6 +194,150 @@ async def wait_on_page(seconds: int = 5) -> dict:
         return {"status": "waited", "url": current_url, "seconds": seconds}
     except Exception as error:
         logger.error("wait_on_page tool failed: %s", error)
+        return {"error": str(error)}
+
+
+async def get_select_options(selector: str) -> dict:
+    """
+    Return all options from a <select> dropdown element.
+
+    ALWAYS call this before using fill_form_field on a <select>, so you can
+    identify the correct value attribute for each option. This is especially
+    important when multiple options share the same visible label (e.g. "Quizz"
+    appearing under several weeks) -- the value attribute is the only way to
+    distinguish them.
+
+    Args:
+        selector: A CSS selector identifying the <select> element.
+
+    Returns:
+        A dict with "options": [{"value": ..., "label": ..., "is_selected": ...}]
+        and "count", or "error" on failure.
+    """
+    if active_session.page is None:
+        return {"error": "Browser is not running."}
+
+    try:
+        options = await active_session.page.evaluate(
+            """(selector) => {
+                const select = document.querySelector(selector);
+                if (!select) return null;
+                return Array.from(select.options).map(o => ({
+                    value: o.value,
+                    label: o.text.trim(),
+                    is_selected: o.selected
+                }));
+            }""",
+            selector,
+        )
+        if options is None:
+            return {"error": f"No <select> element found for selector: {selector}"}
+        return {"options": options, "count": len(options)}
+    except Exception as error:
+        logger.error("get_select_options tool failed for selector '%s': %s", selector, error)
+        return {"error": str(error)}
+
+
+async def click_and_download(selector: str, label: str = "download") -> dict:
+    """
+    Click an element that triggers a file download and save the file to output/downloads/.
+
+    Use this instead of click_element when the button or link causes a file to
+    be downloaded (e.g. "Export questions to file" on the Moodle export page).
+    The downloaded file is saved with a timestamp in the filename.
+
+    Args:
+        selector: A CSS selector identifying the button or link to click.
+        label:    A short label included in the saved filename. Defaults to "download".
+
+    Returns:
+        A dict with "file_path" of the saved file and "original_filename",
+        or "error" on failure.
+    """
+    if active_session.page is None:
+        return {"error": "Browser is not running."}
+
+    try:
+        downloads_dir = get_downloads_directory()
+        timestamp = build_timestamp_string()
+
+        async with active_session.page.expect_download() as download_info:
+            await active_session.page.click(selector)
+
+        download = await download_info.value
+        original_filename = download.suggested_filename
+        save_path = downloads_dir / f"{label}_{timestamp}_{original_filename}"
+        await download.save_as(str(save_path))
+
+        logger.info("Downloaded file saved to: %s", save_path)
+        return {"file_path": str(save_path), "original_filename": original_filename}
+    except Exception as error:
+        logger.error("click_and_download tool failed for selector '%s': %s", selector, error)
+        return {"error": str(error)}
+
+
+async def click_element(selector: str) -> dict:
+    """
+    Click an element on the current page identified by a CSS selector.
+
+    Use this to click buttons, radio buttons, checkboxes, links, or any other
+    clickable element. For radio buttons use selectors like
+    'input[type="radio"][value="moodle_xml"]' or locate by label text.
+
+    Args:
+        selector: A CSS selector that uniquely identifies the element to click.
+
+    Returns:
+        A dict with "status": "clicked" and the selector used, or "error" on failure.
+    """
+    if active_session.page is None:
+        return {"error": "Browser is not running."}
+
+    try:
+        await active_session.page.click(selector)
+        await active_session.page.wait_for_load_state("networkidle")
+        await asyncio.sleep(1)
+        return {"status": "clicked", "selector": selector}
+    except Exception as error:
+        logger.error("click_element tool failed for selector '%s': %s", selector, error)
+        return {"error": str(error)}
+
+
+async def fill_form_field(selector: str, value: str) -> dict:
+    """
+    Fill a form field on the current page with a value.
+
+    Works for text inputs, textareas, and <select> dropdowns.
+    For a <select>, pass the option's VALUE attribute (not the visible label
+    text). Call get_select_options() first to inspect available values before
+    selecting -- this avoids ambiguity when multiple options share the same
+    visible label. Falls back to label matching only if the value does not match.
+
+    Args:
+        selector: A CSS selector that uniquely identifies the form field.
+        value:    The value to fill in. For <select> elements, pass the option's
+                  value attribute (e.g. "6641,229221"), not the visible label.
+
+    Returns:
+        A dict with "status": "filled", the selector, and the value used,
+        or "error" on failure.
+    """
+    if active_session.page is None:
+        return {"error": "Browser is not running."}
+
+    try:
+        tag_name = await active_session.page.eval_on_selector(selector, "el => el.tagName.toLowerCase()")
+        if tag_name == "select":
+            try:
+                await active_session.page.select_option(selector, value=value)
+            except Exception:
+                # Fall back to label matching if value attribute does not match.
+                await active_session.page.select_option(selector, label=value)
+        else:
+            await active_session.page.fill(selector, value)
+        return {"status": "filled", "selector": selector, "value": value}
+    except Exception as error:
+        logger.error("fill_form_field tool failed for selector '%s': %s", selector, error)
         return {"error": str(error)}
 
 
@@ -266,6 +438,21 @@ TOOL_REGISTRY = {
             },
         },
     },
+    "extract_links": {
+        "function": extract_links,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "extract_links",
+                "description": (
+                    "Extract all links from the current browser page. "
+                    "Returns a list of link text and URLs. Use this to find "
+                    "course links, quiz links, or any other clickable links."
+                ),
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+    },
     "wait_on_page": {
         "function": wait_on_page,
         "schema": {
@@ -285,6 +472,115 @@ TOOL_REGISTRY = {
                         },
                     },
                     "required": [],
+                },
+            },
+        },
+    },
+    "click_element": {
+        "function": click_element,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "click_element",
+                "description": (
+                    "Click an element on the current page using a CSS selector. "
+                    "Use this for radio buttons, checkboxes, navigation links, and form submissions "
+                    "that do NOT trigger a file download. "
+                    "WARNING: Do NOT use this for buttons that cause a file to be downloaded "
+                    "(e.g. 'Export questions to file'). Use click_and_download instead."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {
+                            "type": "string",
+                            "description": "A CSS selector identifying the element to click.",
+                        },
+                    },
+                    "required": ["selector"],
+                },
+            },
+        },
+    },
+    "click_and_download": {
+        "function": click_and_download,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "click_and_download",
+                "description": (
+                    "Click a button or link that triggers a file download and save the file "
+                    "to output/downloads/. Use this instead of click_element when the action "
+                    "causes a file download (e.g. the 'Export questions to file' button)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {
+                            "type": "string",
+                            "description": "A CSS selector identifying the button or link to click.",
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "A short label for the saved filename. Defaults to 'download'.",
+                        },
+                    },
+                    "required": ["selector"],
+                },
+            },
+        },
+    },
+    "get_select_options": {
+        "function": get_select_options,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "get_select_options",
+                "description": (
+                    "Return all options from a <select> dropdown on the current page. "
+                    "ALWAYS call this before fill_form_field on a <select> to get the "
+                    "exact value attribute for each option. Multiple options can share "
+                    "the same visible label (e.g. 'Quizz') -- the value attribute is the "
+                    "only way to distinguish them."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {
+                            "type": "string",
+                            "description": "A CSS selector identifying the <select> element.",
+                        },
+                    },
+                    "required": ["selector"],
+                },
+            },
+        },
+    },
+    "fill_form_field": {
+        "function": fill_form_field,
+        "schema": {
+            "type": "function",
+            "function": {
+                "name": "fill_form_field",
+                "description": (
+                    "Fill a form field with a value. For <select> dropdowns, pass the "
+                    "option's VALUE attribute (not the visible label text). Always call "
+                    "get_select_options first to find the correct value. Falls back to "
+                    "label matching if the value does not match."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {
+                            "type": "string",
+                            "description": "A CSS selector identifying the form field.",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The value to fill in, or option text for selects.",
+                        },
+                    },
+                    "required": ["selector", "value"],
                 },
             },
         },
