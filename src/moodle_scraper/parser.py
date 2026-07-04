@@ -78,8 +78,14 @@ def call_azure_openai(messages: list, tools: list | None = None) -> object:
     request_kwargs = {
         "model": deployment,
         "messages": messages,
-        "temperature": 0,
     }
+
+    # Some models (e.g. reasoning/o-series, gpt-5) only accept the default
+    # temperature and reject any explicit value. Send temperature only when
+    # AZURE_OPENAI_TEMPERATURE is set; otherwise let the model use its default.
+    temperature = os.getenv("AZURE_OPENAI_TEMPERATURE", "").strip()
+    if temperature:
+        request_kwargs["temperature"] = float(temperature)
 
     if tools:
         request_kwargs["tools"] = tools

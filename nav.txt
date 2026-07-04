@@ -1,0 +1,136 @@
+Moodle Question Bank Automation Process
+======================================
+
+Goal:
+- Navigate to a Moodle course
+- Open the Question Bank
+- Export all questions as Moodle XML
+- Preview each question
+- Save screenshots of all questions
+
+--------------------------------------------------
+1. Open Moodle and Login
+--------------------------------------------------
+
+- Launch browser
+- Login automatically using Moodle credentials
+- Confirm landing page is Dashboard
+
+Example:
+- Open browser
+- Login to Moodle
+- Verify Dashboard is visible
+
+--------------------------------------------------
+2. Navigate to the Course
+--------------------------------------------------
+
+- Open the target course page
+
+Example URL:
+https://openup.uni-potsdam.de/course/view.php?id=691
+
+Course:
+- MCP and AI
+
+--------------------------------------------------
+3. Open Question Bank
+--------------------------------------------------
+
+Navigation path:
+- Course
+- Question bank
+- Questions
+
+Direct URL:
+https://openup.uni-potsdam.de/question/edit.php?courseid=691
+
+--------------------------------------------------
+4. Export All Questions as Moodle XML
+--------------------------------------------------
+
+Navigation path:
+- Question bank
+- Export
+
+Direct URL:
+https://openup.uni-potsdam.de/question/bank/exportquestions/export.php?courseid=691
+
+Steps:
+1. Select “Moodle XML format”
+2. In Export category:
+   - Select top-level category:
+     “Top for MCP and AI”
+3. Check:
+   - “Write category to file”
+4. Click:
+   - “Export questions to file”
+5. Save downloaded XML file
+
+Downloaded file example:
+output/xml/moodle_xml_questions_20260704_111948_questions-MCP_AI-top-20260704-1319.xml
+
+--------------------------------------------------
+5. Open Questions Page
+--------------------------------------------------
+
+Return to:
+https://openup.uni-potsdam.de/question/edit.php?courseid=691
+
+Steps:
+1. Choose a category
+2. Apply filters if needed
+3. Show question list
+
+--------------------------------------------------
+6. Preview Individual Questions
+--------------------------------------------------
+
+For every question:
+1. Open Actions menu
+2. Click “Preview”
+3. Wait until preview page loads
+
+Example preview URL:
+https://openup.uni-potsdam.de/question/bank/previewquestion/preview.php?id=68526&courseid=691
+
+--------------------------------------------------
+7. Save Screenshot of Each Question
+--------------------------------------------------
+
+While on preview page:
+1. Take screenshot
+2. Save into screenshots folder
+
+Example filenames:
+- output/screenshots/question_68526_Eintrag_x_20260704_112507.png
+- output/screenshots/question_68527_Eintrag_y_20260704_112619.png
+- output/screenshots/question_68528_Eintrag_z_20260704_112650.png
+- output/screenshots/question_68529_Text_Eintrag_w_20260704_112727.png
+
+--------------------------------------------------
+8. Repeat for All Categories
+--------------------------------------------------
+
+Process:
+1. Return to Question Bank
+2. Select next category
+3. Open each question preview
+4. Save screenshot
+5. Continue until all categories are complete
+
+--------------------------------------------------
+9. Final Output
+--------------------------------------------------
+
+Outputs generated:
+1. Moodle XML export file
+2. Screenshot images for all questions
+
+Folders:
+- output/xml/
+- output/screenshots/
+
+--------------------------------------------------
+End of Process
+--------------------------------------------------
